@@ -1,0 +1,39 @@
+# Dados reais e estado local - nunca versionar
+# (decisions.json, sessoes de upload e backups ficam aqui; criados automaticamente)
+data/
+*.log
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+
+# Frontend / build (static/dist e gerado por "npm run build")
+node_modules/
+static/dist/
+
+# Configuracao local e chaves
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Planilhas, PDFs e qualquer dado de cliente que caia na pasta do projeto
+*.xlsx
+*.xls
+*.xlsm
+*.csv
+*.pdf
+decisions.json
+decisions.json.*
+*.bak
+*.bak.*
+sessions/
+
+# Ferramentas locais
+.claude/
