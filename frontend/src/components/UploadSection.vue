@@ -1,5 +1,5 @@
 <script setup>
-import { ref, watch } from "vue";
+import { ref, watch, onUnmounted } from "vue";
 
 const props = defineProps({
   status: { type: Object, default: null },
@@ -14,7 +14,23 @@ const advboxProcessosFile = ref(null);
 const sending = ref(false);
 const localError = ref("");
 
-watch(() => props.status, () => { sending.value = false; });
+// Quanto tempo ja faz que a pessoa clicou. Ler uma planilha de 13 mil linhas
+// e comparar 7 mil nomes leva um tempo real, e mais ainda numa hospedagem
+// modesta. Um botao parado em "Enviando..." por um minuto parece travado;
+// com o relogio correndo, parece o que e - trabalho em andamento.
+const segundos = ref(0);
+let relogio = null;
+
+function pararRelogio() {
+  if (relogio) { clearInterval(relogio); relogio = null; }
+}
+onUnmounted(pararRelogio);
+
+const etapa = () => (segundos.value < 6
+  ? "Enviando a planilha"
+  : "Lendo a planilha e comparando os nomes");
+
+watch(() => props.status, () => { sending.value = false; pararRelogio(); });
 
 function onSubmit() {
   if (!escavadorFile.value && !clientesFile.value) {
@@ -22,6 +38,9 @@ function onSubmit() {
     return;
   }
   localError.value = "";
+  segundos.value = 0;
+  pararRelogio();
+  relogio = setInterval(() => { segundos.value += 1; }, 1000);
   const fd = new FormData();
   if (escavadorFile.value) fd.append("escavador", escavadorFile.value);
   if (clientesFile.value) fd.append("clientes", clientesFile.value);
@@ -63,10 +82,14 @@ function onSubmit() {
         <input type="file" accept=".pdf" @change="advboxProcessosFile = $event.target.files[0] || null">
       </div>
 
-      <button type="submit" :disabled="sending">{{ sending ? "Enviando..." : "Enviar e analisar" }}</button>
+      <button type="submit" :disabled="sending">{{ sending ? etapa() + "... (" + segundos + "s)" : "Enviar e analisar" }}</button>
     </form>
     <div v-if="localError" class="error-msg">{{ localError }}</div>
-    <div v-if="sending" class="ok-msg">Enviando...</div>
+    <div v-if="sending" class="ok-msg">
+      {{ etapa() }}… <strong>{{ segundos }}s</strong>
+      <span v-if="segundos >= 20"> — planilha grande leva mais de um minuto. Não feche esta aba:
+        o que você revisar fica salvo aqui mesmo.</span>
+    </div>
     <div v-else-if="status && status.type === 'ok'" class="ok-msg">{{ status.message }}</div>
     <div v-else-if="status && status.type === 'error'" class="error-msg">{{ status.message }}</div>
   </section>

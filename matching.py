@@ -14,6 +14,7 @@ Ideia geral:
 import re
 import unicodedata
 from collections import defaultdict
+from functools import lru_cache
 
 from rapidfuzz import fuzz
 
@@ -236,8 +237,18 @@ def _rejoin_split_tokens(tokens, outros, fuzzy_threshold=90):
     while i < len(tokens):
         if i + 1 < len(tokens):
             juncao = tokens[i] + tokens[i + 1]
-            alvo = max(outros, key=lambda o: fuzz.ratio(juncao, o))
-            if (fuzz.ratio(juncao, alvo) >= fuzzy_threshold
+            # score_cutoff deixa o rapidfuzz descartar no C o que nao tem como
+            # chegar ao limiar (inclusive por diferenca de tamanho), em vez de
+            # calcular a distancia inteira de cada candidato aqui no Python.
+            # O alvo so e usado quando a juncao PASSA do limiar; quando nenhum
+            # passa, o codigo antigo tambem nao juntava nada - entao descartar
+            # cedo nao muda resultado nenhum.
+            alvo, melhor = None, 0.0
+            for o in outros:
+                s = fuzz.ratio(juncao, o, score_cutoff=fuzzy_threshold)
+                if s > melhor:
+                    alvo, melhor = o, s
+            if (alvo is not None
                     and fuzz.ratio(tokens[i], alvo) < fuzzy_threshold
                     and fuzz.ratio(tokens[i + 1], alvo) < fuzzy_threshold):
                 saida.append(juncao)
@@ -551,6 +562,27 @@ def _so_iniciais(tokens):
     return bool(tokens) and all(len(t.strip(".")) <= 1 for t in tokens)
 
 
+# Cache do que depende de UM nome so.
+#
+# O mesmo nome entra em centenas de comparacoes: numa conta real, 7.089 nomes
+# distintos geraram 564 mil pares, e cada par refazia o desmonte dos DOIS
+# lados - o mesmo trabalho repetido ~160 vezes por nome. Era quase metade do
+# tempo da analise, e some inteiro com um dicionario.
+#
+# O limite existe porque o processo serve varias planilhas seguidas: sem ele o
+# cache cresceria para sempre num servidor que nao reinicia.
+@lru_cache(maxsize=50000)
+def _tokens_base(norm):
+    """Tokens do nome ja sem artigo inicial e sem sigla grudada na frente."""
+    return tuple(_strip_leading_acronym(_strip_leading_article(norm.split())))
+
+
+@lru_cache(maxsize=50000)
+def _nome_mascarado(norm):
+    """True quando o nome e so uma sequencia de iniciais - ver _so_iniciais."""
+    return _so_iniciais(norm.split())
+
+
 def compare_names(norm_a, norm_b, threshold=DEFAULT_THRESHOLD, require_last_token=True):
     """Compara dois nomes ja normalizados.
     Retorna None se nao ha match, ou dict {score, reason} se ha.
@@ -591,7 +623,7 @@ def compare_names(norm_a, norm_b, threshold=DEFAULT_THRESHOLD, require_last_toke
     #
     # Isso NAO atinge inicial no meio de nome de verdade ("GILMAR O ROCHA" x
     # "GILMAR OTAVIO ROCHA"), que continua casando: ali ha palavra inteira.
-    if _so_iniciais(norm_a.split()) or _so_iniciais(norm_b.split()):
+    if _nome_mascarado(norm_a) or _nome_mascarado(norm_b):
         return None
 
     edge_fuzzy = max(70, threshold - 3)
@@ -600,8 +632,8 @@ def compare_names(norm_a, norm_b, threshold=DEFAULT_THRESHOLD, require_last_toke
     # coincidem no prenome e sobrenome).
     positional_floor = max(65, threshold - 18)
 
-    tokens_a = _strip_leading_acronym(_strip_leading_article(norm_a.split()))
-    tokens_b = _strip_leading_acronym(_strip_leading_article(norm_b.split()))
+    tokens_a = list(_tokens_base(norm_a))
+    tokens_b = list(_tokens_base(norm_b))
     # palavra partida em duas por erro de codificacao - ver _rejoin_split_tokens
     tokens_a = _rejoin_split_tokens(tokens_a, tokens_b)
     tokens_b = _rejoin_split_tokens(tokens_b, tokens_a)
