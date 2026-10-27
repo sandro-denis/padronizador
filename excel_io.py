@@ -511,8 +511,114 @@ def apply_escavador(path, meta, mapping, out_path, responsavel_mapping=None,
     return changes
 
 
+# Quebra de linha dentro da celula de anotacoes. Fica como constante porque
+# o Excel so aceita o caractere cru aqui, nao um escape.
+QUEBRA = chr(10)
+
+
+def _rotulo_da_coluna(ws, header_row, col):
+    """O nome da coluna como ele aparece NA PLANILHA DA PESSOA.
+
+    Usa o cabecalho de verdade, nao a chave interna ("celular", "pis_pasep"),
+    porque a anotacao vai ser lida por gente: tem que dizer de qual coluna o
+    dado veio, no vocabulario do arquivo que ela conhece.
+    """
+    valor = ws.cell(row=header_row, column=col).value
+    texto = " ".join(str(valor).split()) if valor is not None else ""
+    return texto or ("coluna %d" % col)
+
+
+def _mesmo_valor(a, b):
+    return " ".join(str(a).split()).upper() == " ".join(str(b).split()).upper()
+
+
+def fundir_linhas_duplicadas(ws, meta, all_field_cols, merge_rows, changes):
+    """Antes de apagar a linha duplicada, aproveita o que so existia nela.
+
+    Regra, campo a campo:
+      - celula VAZIA na linha que fica -> preenche. E a mesma regra do
+        enriquecimento vindo do ADVBOX: nunca sobrescreve dado existente;
+      - valor IGUAL -> nao faz nada;
+      - valor DIFERENTE -> nao sobrescreve E nao descarta: anota em ANOTACOES
+        GERAIS dizendo de qual coluna veio.
+
+    Sem isso, resolver uma duplicata apagava em silencio o telefone, o RG ou o
+    endereco que so a linha perdedora tinha - justamente o tipo de dado que
+    costuma ser o motivo de a pessoa ter sido cadastrada duas vezes.
+
+    O terceiro caso e o que nao tem resposta automatica certa: dois valores
+    diferentes para o mesmo campo da mesma pessoa e uma divergencia que so
+    quem conhece o cliente resolve. Por isso ela vira TEXTO visivel na ficha,
+    em vez de virar uma escolha silenciosa do programa.
+
+    `merge_rows`: {linha_que_sai: linha_que_fica}.
+    """
+    if not merge_rows:
+        return
+    col_nome = meta["col_nome"]
+    header_row = meta["header_row"]
+
+    col_anotacoes = all_field_cols.get("anotacoes")
+    if col_anotacoes is None:
+        # A planilha nao tem a coluna. Criar e a unica saida que nao repete o
+        # proprio bug que esta funcao conserta - descartar dado em silencio.
+        # ANOTACOES GERAIS e uma das colunas do padrao ADVBOX, entao ela cabe
+        # ali de direito, e a criacao entra no log como qualquer alteracao.
+        col_anotacoes = ws.max_column + 1
+        ws.cell(row=header_row, column=col_anotacoes).value = "ANOTAÇÕES GERAIS"
+        all_field_cols["anotacoes"] = col_anotacoes
+        changes.append({"row": header_row, "before": "(a planilha nao tinha essa coluna)",
+                        "after": "ANOTAÇÕES GERAIS",
+                        "coluna": "coluna criada para nao descartar os dados divergentes"})
+
+    def ler(row, col):
+        v = ws.cell(row=row, column=col).value
+        return str(v).strip() if v is not None and str(v).strip() else ""
+
+    for sai, fica in sorted(merge_rows.items()):
+        divergentes = []
+        for chave, col in sorted(all_field_cols.items()):
+            if col == col_anotacoes:
+                continue  # a anotacao da linha que sai entra como texto, abaixo
+            valor_sai = ler(sai, col)
+            if not valor_sai:
+                continue
+            valor_fica = ler(fica, col)
+            if not valor_fica:
+                ws.cell(row=fica, column=col).value = valor_sai
+                changes.append({"row": fica, "before": "(vazio)", "after": valor_sai,
+                                "coluna": "%s (trazido da duplicata da linha %d)"
+                                          % (_rotulo_da_coluna(ws, header_row, col), sai)})
+            elif not _mesmo_valor(valor_sai, valor_fica):
+                divergentes.append("%s: %s"
+                                   % (_rotulo_da_coluna(ws, header_row, col), valor_sai))
+
+        anotacao_que_sai = ler(sai, col_anotacoes)
+        if anotacao_que_sai:
+            divergentes.append("%s: %s"
+                               % (_rotulo_da_coluna(ws, header_row, col_anotacoes),
+                                  anotacao_que_sai))
+        if not divergentes:
+            continue
+
+        nome_que_sai = ler(sai, col_nome)
+        cabecalho = "Dados da duplicata removida (linha %d%s):" % (
+            sai, " - " + nome_que_sai if nome_que_sai else "")
+        bloco = cabecalho + QUEBRA + QUEBRA.join(divergentes)
+
+        atual = ler(fica, col_anotacoes)
+        novo = (atual + QUEBRA + QUEBRA + bloco) if atual else bloco
+        celula = ws.cell(row=fica, column=col_anotacoes)
+        celula.value = novo
+        celula.alignment = openpyxl.styles.Alignment(wrap_text=True, vertical="top")
+        changes.append({"row": fica, "before": atual or "(vazio)", "after": novo,
+                        "coluna": "%s (divergencias da duplicata da linha %d)"
+                                  % (_rotulo_da_coluna(ws, header_row, col_anotacoes), sai)})
+
+
 def apply_clientes(path, meta, mapping, out_path, rows_to_delete=None, extra_rows=None,
-                    field_updates=None, field_overrides=None, dry_run=False):
+                    field_updates=None, field_overrides=None, merge_rows=None,
+                    dry_run=False):
     """Aplica o mapa norm->canonico na coluna NOME, opcionalmente remove linhas
     de CPF duplicado ja resolvidas, adiciona linhas novas ao final (ex: nomes
     que so existem na conta do ADVBOX e ainda nao estao cadastrados aqui -
@@ -529,6 +635,7 @@ def apply_clientes(path, meta, mapping, out_path, rows_to_delete=None, extra_row
     extra_rows = extra_rows or []
     field_updates = field_updates or {}
     field_overrides = field_overrides or {}
+    merge_rows = merge_rows or {}
     wb = openpyxl.load_workbook(path)
     ws = wb[meta["sheet_name"]]
     col_nome = meta["col_nome"]
@@ -537,6 +644,11 @@ def apply_clientes(path, meta, mapping, out_path, rows_to_delete=None, extra_row
     if col_cpf:
         all_field_cols["cpf_cnpj"] = col_cpf
 
+    changes = []
+    # a fusao vem ANTES do laco: assim o enriquecimento do ADVBOX, que so
+    # preenche celula vazia, ja ve o que a duplicata trouxe e nao disputa com
+    # ele - dado da propria planilha tem precedencia sobre dado de fora
+    fundir_linhas_duplicadas(ws, meta, all_field_cols, merge_rows, changes)
     changes = []
     for row in range(meta["header_row"] + 1, ws.max_row + 1):
         cell = ws.cell(row=row, column=col_nome)

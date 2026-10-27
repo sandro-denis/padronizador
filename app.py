@@ -1075,6 +1075,25 @@ def api_apply():
 
     rows_to_delete = set()
     clientes_duplicates_removed = []
+    # Quem sai e quem fica, POR GRUPO. A linha removida costuma ser o unico
+    # lugar onde existe um telefone ou um RG; antes disso ela era apagada e
+    # levava esse dado junto, em silencio. Ver fundir_linhas_duplicadas.
+    por_grupo = defaultdict(lambda: {"sai": [], "fica": []})
+    for d in clientes_duplicate_decisions_in:
+        row = d.get("row")
+        if not row:
+            continue
+        chave = d.get("grupo") or ("linha-%s" % row)
+        lado = "sai" if d.get("action") == "remover" else "fica"
+        por_grupo[chave][lado].append(row)
+    merge_rows = {}
+    for info in por_grupo.values():
+        if not info["sai"] or not info["fica"]:
+            continue  # grupo inteiro removido, ou nenhum: nao ha destino
+        destino = min(info["fica"])
+        for row in info["sai"]:
+            merge_rows[row] = destino
+
     for d in clientes_duplicate_decisions_in:
         row = d.get("row")
         action = d.get("action")
@@ -1113,6 +1132,7 @@ def api_apply():
         cli_changes = excel_io.apply_clientes(
             session["cli_path"], cli_meta, mapping, cli_out_path,
             rows_to_delete=rows_to_delete,
+            merge_rows=merge_rows,
             extra_rows=extra_clientes_rows,
             field_updates=field_updates,
             field_overrides=field_overrides,

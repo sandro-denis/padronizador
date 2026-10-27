@@ -60,11 +60,26 @@ function statusBadgeClass(status) {
 }
 
 function collectDecisions() {
-  return Object.entries(rowDecisions).map(([row, d]) => ({
-    row: Number(row),
-    action: d.remove ? "remover" : "manter",
-    text: d.text,
-  }));
+  // Percorre os GRUPOS, e nao o mapa solto de linhas, porque o servidor
+  // precisa saber para qual linha os dados da removida devem ir - e isso e
+  // o grupo que diz. Sem ele a fusao nao tem destino.
+  const saida = [];
+  const fontes = [["exact", props.exactGroups], ["fuzzy", props.fuzzyGroups]];
+  for (const [prefixo, grupos] of fontes) {
+    for (const g of grupos) {
+      for (const r of g.rows) {
+        const d = rowDecisions[r.row];
+        if (!d) continue;
+        saida.push({
+          row: r.row,
+          action: d.remove ? "remover" : "manter",
+          text: d.text,
+          grupo: prefixo + "-" + g.id,
+        });
+      }
+    }
+  }
+  return saida;
 }
 
 defineExpose({ restaurar, collectDecisions });

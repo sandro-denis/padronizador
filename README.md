@@ -7,6 +7,12 @@ Ela encontra homônimos e duplicatas (o mesmo cliente, ou a mesma empresa, escri
 de formas diferentes), mostra os grupos para você revisar um a um, registra cada
 decisão e gera as planilhas corrigidas e um resumo das alterações.
 
+Ao resolver uma duplicata no cadastro de clientes, o dado da linha removida
+**não é descartado**: o que estava vazio na linha que fica é preenchido, e o que
+diverge vai para `ANOTAÇÕES GERAIS` dizendo de qual coluna veio — porque dois
+valores diferentes para o mesmo campo são uma divergência que só quem conhece o
+cliente resolve.
+
 **Rodando na sua máquina — que é o uso para o qual foi feita — nenhum dado sai
 dela.** A ferramenta não chama serviço externo nenhum: a única requisição que a
 página faz para fora é a fonte do Google (e dá para remover, veja
