@@ -1,6 +1,7 @@
 <script setup>
 import { reactive, ref, computed, watch, onMounted, onUnmounted } from "vue";
 import * as api from "../api";
+import { config } from "../config";
 
 const props = defineProps({
   titulo: { type: String, required: true },
@@ -104,6 +105,11 @@ const clusterTouchedCount = computed(() =>
 const registry = computed(() =>
   props.registryText.split("\n").map((l) => l.trim()).filter(Boolean)
 );
+
+// O bloco do print tambem depende do servidor: numa instancia Linux o OCR
+// nativo do Windows nao existe (ver /api/config), e oferecer um botao que
+// sempre falha e pior que nao oferecer nada.
+const mostrarOcr = computed(() => props.showOcr && config.ocr);
 
 const imageFile = ref(null);
 const ocrLoading = ref(false);
@@ -302,7 +308,7 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
       </div>
     </div>
 
-    <div class="field" v-if="showOcr">
+    <div class="field" v-if="mostrarOcr">
       <label>Print da lista (opcional)</label>
       <div class="field inline">
         <input type="file" accept="image/*" @change="imageFile = $event.target.files[0] || null">

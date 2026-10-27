@@ -7,7 +7,14 @@ Ela encontra homônimos e duplicatas (o mesmo cliente, ou a mesma empresa, escri
 de formas diferentes), mostra os grupos para você revisar um a um, registra cada
 decisão e gera as planilhas corrigidas e um resumo das alterações.
 
-Tudo roda na sua máquina. Nenhum dado é enviado para fora.
+**Rodando na sua máquina — que é o uso para o qual foi feita — nenhum dado sai
+dela.** A ferramenta não chama serviço externo nenhum: a única requisição que a
+página faz para fora é a fonte do Google (e dá para remover, veja
+[Privacidade](#privacidade)).
+
+Dá para hospedar numa instância compartilhada, e há um `Dockerfile` pronto para
+isso, mas aí essa frase deixa de valer: as planilhas passam a subir para um
+servidor. Leia [Hospedar uma instância](#hospedar-uma-instância) antes.
 
 ## Requisitos
 
@@ -47,6 +54,7 @@ Veja `.env.example`. As variáveis são lidas do ambiente:
 | `PADRONIZADOR_PORT`    | `5057`      | Porta do servidor (também usada pelo proxy do Vite) |
 | `PADRONIZADOR_HOST`    | `127.0.0.1` | Endereço de escuta do servidor             |
 | `PADRONIZADOR_MEMORIA` | `0`         | Memória de decisões entre planilhas — ver abaixo |
+| `PADRONIZADOR_SESSAO_TTL_MIN` | `1440` (24h) | Minutos que uma sessão fica no disco antes de ser apagada; `0` desliga a limpeza |
 
 O app não carrega o `.env` automaticamente: defina as variáveis no shell antes de
 iniciar, ou ajuste o valor diretamente no `run.bat`.
@@ -88,6 +96,56 @@ O app cria a pasta `data/`, que guarda:
 Essa pasta contém dados de clientes. Ela está no `.gitignore` e não deve ser
 versionada nem compartilhada. Apagar `data/sessions/` é seguro a qualquer
 momento — são arquivos de trabalho já baixados.
+
+## Hospedar uma instância
+
+Há um `Dockerfile` e um `render.yaml` prontos. **Mas pense antes de hospedar**,
+porque o modelo de confiança muda por completo.
+
+### O que muda
+
+Rodando local, a planilha nunca sai da sua máquina. Numa instância compartilhada,
+ela sobe para um servidor que **você** escolheu — e se quem usa for outro
+escritório, você passa a tratar dado pessoal de terceiros (nome, CPF) em
+infraestrutura sua. Isso tem consequência de LGPD que não é técnica e este
+README não resolve.
+
+### O que já está configurado para reduzir risco
+
+| Medida | Como |
+|---|---|
+| Memória de decisões **desligada** | `PADRONIZADOR_MEMORIA=0`. O `decisions.json` é único e global: ligado, mostraria decisões e nomes de um escritório a outro |
+| Sessão **apagada** do disco | `PADRONIZADOR_SESSAO_TTL_MIN=60`. A varredura roda a cada upload e remove o que passou do prazo, inclusive o que sobrou de um reinício |
+| Nenhuma tela de histórico | Não existe rota que liste sessões. Ninguém enumera o que outro rodou |
+| OCR ausente em vez de quebrado | O OCR usa a API do Windows; em Linux `/api/config` informa e a interface esconde a seção |
+| Um worker só | O estado da revisão vive em memória do processo |
+
+### O que NÃO está resolvido
+
+- **Não há login.** O ID da sessão (48 bits, no caminho da URL) é a única
+  credencial. URL entra em log de servidor, de proxy e no histórico do
+  navegador — quem alcançar o log alcança o download enquanto a sessão existir.
+  Para uso com dado real por mais de um escritório, **coloque autenticação na
+  frente** (proxy com senha, OAuth, VPN).
+- **Um worker só não escala.** Mais de um exige tirar a sessão da memória do
+  processo (Redis ou banco). Não é ajuste de configuração.
+- **Reiniciar derruba a revisão em andamento.** Em plano gratuito que dorme por
+  inatividade, isso acontece com frequência.
+
+### Subindo no Render
+
+1. Faça um fork ou use este repositório.
+2. No Render: **New → Blueprint**, aponte para o repositório. O `render.yaml`
+   já traz as variáveis.
+3. Prefira hospedagem de **disco efêmero**: aí o dado desaparece no deploy
+   seguinte, além da varredura por tempo.
+
+Em qualquer outro host de contêiner, o `Dockerfile` basta:
+
+```bash
+docker build -t padronizador .
+docker run -p 5057:5057 -e PADRONIZADOR_SESSAO_TTL_MIN=60 padronizador
+```
 
 ## Testes
 

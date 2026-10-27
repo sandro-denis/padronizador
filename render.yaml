@@ -1,0 +1,22 @@
+# Blueprint do Render. Com este arquivo no repositorio, o deploy e: New ->
+# Blueprint -> escolher este repo. Os valores abaixo ja vem configurados.
+services:
+  - type: web
+    name: padronizador
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    region: oregon
+    healthCheckPath: /api/config
+    envVars:
+      # Memoria de decisoes DESLIGADA. O decisions.json e unico e global: numa
+      # instancia compartilhada, ligar isso faria as decisoes e os nomes de
+      # clientes de um escritorio aparecerem como sugestao no de outro.
+      - key: PADRONIZADOR_MEMORIA
+        value: "0"
+      # A sessao (planilha enviada + geradas) vive 1h no disco e e apagada na
+      # varredura do upload seguinte.
+      - key: PADRONIZADOR_SESSAO_TTL_MIN
+        value: "60"
+      - key: PADRONIZADOR_HOST
+        value: 0.0.0.0

@@ -1,0 +1,26 @@
+# Dado de cliente e estado local: NUNCA entram na imagem
+data/
+*.log
+*.xlsx
+*.xls
+*.csv
+*.pdf
+
+# build e cache (o Dockerfile gera o bundle no proprio estagio do Node)
+frontend/node_modules/
+static/dist/
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+
+# nao servem dentro do conteiner
+.git/
+.github/
+.claude/
+tests/
+*.md
+run.bat
+ocr_engine.ps1
+.env

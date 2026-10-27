@@ -17,6 +17,16 @@ POWERSHELL_EXE = os.path.join(
 NOISE_WORDS = {"NOME", "STATUS", "ONLINE", "OFFLINE", "USUARIO", "USUARIOS", "AÇÕES", "ACOES"}
 
 
+def disponivel():
+    """True quando o OCR nativo do Windows da pra ser usado nesta maquina.
+
+    O motor e a API Windows.Media.Ocr, chamada por PowerShell. Em Linux - como
+    numa instancia hospedada - nao existe, e o recurso nao deve nem aparecer na
+    tela: melhor ausente do que presente e quebrado.
+    """
+    return os.name == "nt" and os.path.exists(POWERSHELL_EXE)
+
+
 def run_ocr(image_path):
     """Roda o OCR e retorna a lista de linhas de texto detectadas (cru, sem filtro)."""
     try:

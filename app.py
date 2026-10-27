@@ -13,6 +13,7 @@ Fluxo:
 """
 import os
 import shutil
+import time
 import uuid
 from collections import defaultdict
 
@@ -50,6 +51,54 @@ app.config["MAX_CONTENT_LENGTH"] = 100 * 1024 * 1024  # 100 MB
 # sessao em memoria: session_id -> {esc_meta, esc_path, cli_meta, cli_path, occ_by_norm, clusters}
 SESSIONS = {}
 
+# Tempo de vida de uma sessao no disco, em minutos. 0 desliga a limpeza.
+#
+# Cada upload cria data/sessions/<id>/ com a planilha enviada e as geradas.
+# Numa instalacao usada por mais de um escritorio, esse arquivo nao pode ficar
+# no servidor depois que a pessoa terminou: fica ao alcance de quem tiver acesso
+# ao disco ou a um backup.
+#
+# O padrao de 24h e generoso de proposito - quem esta no meio de uma revisao
+# nao pode ver o trabalho desaparecer. Numa instancia publica, baixe isso
+# (PADRONIZADOR_SESSAO_TTL_MIN=60) e prefira hospedagem de disco efemero.
+SESSAO_TTL_MIN = int(os.environ.get("PADRONIZADOR_SESSAO_TTL_MIN", "1440"))
+
+# area de trabalho do OCR: nome fixo, recriada sozinha, nao e sessao
+_OCR_TMP = "_ocr_tmp"
+
+
+def _limpar_sessoes_antigas():
+    """Apaga do disco, e do SESSIONS, toda sessao mais velha que o TTL.
+
+    Roda de forma OPORTUNISTA (a cada upload) em vez de depender de agendador:
+    com um worker so - que e o que o SESSIONS em memoria exige - isso basta, e
+    funciona igual em qualquer hospedagem, sem servico extra.
+
+    Tambem resolve o orfao de reinicio: o SESSIONS vive em memoria, entao
+    reiniciar o servidor perde a referencia mas deixa o diretorio no disco.
+
+    Devolve quantas sessoes foram apagadas.
+    """
+    if SESSAO_TTL_MIN <= 0 or not os.path.isdir(SESSIONS_DIR):
+        return 0
+    limite = time.time() - SESSAO_TTL_MIN * 60
+    apagadas = 0
+    for nome in os.listdir(SESSIONS_DIR):
+        if nome == _OCR_TMP:
+            continue
+        caminho = os.path.join(SESSIONS_DIR, nome)
+        if not os.path.isdir(caminho):
+            continue  # arquivo solto ali: nao e sessao, nao mexe
+        try:
+            if os.path.getmtime(caminho) > limite:
+                continue
+            shutil.rmtree(caminho, ignore_errors=True)
+        except OSError:
+            continue  # sumiu no meio do caminho, ou o SO nao deixou: segue
+        SESSIONS.pop(nome, None)
+        apagadas += 1
+    return apagadas
+
 
 def _session_dir(session_id):
     d = os.path.join(SESSIONS_DIR, session_id)
@@ -71,7 +120,12 @@ def api_config():
     servidor de desenvolvimento do Vite). Injetar no template faria a tela de
     desenvolvimento ficar sem o valor.
     """
-    return jsonify({"memoria": rules_store.MEMORIA})
+    return jsonify({
+        "memoria": rules_store.MEMORIA,
+        # o OCR de print de tela usa a API do Windows: numa instancia Linux ele
+        # nao existe, e a tela esconde a secao em vez de oferecer algo quebrado
+        "ocr": ocr_helper.disponivel(),
+    })
 
 
 @app.route("/api/upload", methods=["POST"])
@@ -85,6 +139,10 @@ def api_upload():
     tem_clientes_file = bool(clientes_file and clientes_file.filename)
     if not tem_escavador_file and not tem_clientes_file:
         return jsonify({"error": "Envie pelo menos a planilha do Escavador (Processos) ou a de Clientes."}), 400
+
+    # varre o que passou do prazo ANTES de criar a nova - ver
+    # _limpar_sessoes_antigas. E o unico gatilho: nao ha agendador.
+    _limpar_sessoes_antigas()
 
     session_id = uuid.uuid4().hex[:12]
     sdir = _session_dir(session_id)
@@ -186,6 +244,13 @@ def api_upload():
 
 @app.route("/api/ocr", methods=["POST"])
 def api_ocr():
+    # a indisponibilidade vem ANTES da validacao da imagem: se o recurso nao
+    # existe nesta maquina, pedir a imagem primeiro so faria a pessoa anexar um
+    # arquivo pra receber o erro depois
+    if not ocr_helper.disponivel():
+        return jsonify({"error": "O OCR de print de tela so funciona no Windows. "
+                                 "Cole os nomes direto na caixa de texto."}), 400
+
     image_file = request.files.get("image")
     if not image_file or not image_file.filename:
         return jsonify({"error": "Envie uma imagem."}), 400
