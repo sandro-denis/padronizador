@@ -80,7 +80,7 @@ Por que `/api/config` e não um valor injetado no template: injetar no `template
 
 ## Testes
 
-- `python -m pytest tests`: 127 casos em 9 arquivos `tests/test_*.py`. Vários são parametrizados.
+- `python -m pytest tests`: 176 casos em 13 arquivos `tests/test_*.py`. Vários são parametrizados.
 - Muitos testes codificam uma **forma** de nome (número de palavras, iniciais, acentos, prefixos, ordem). As regras do motor foram calibradas nessas formas. Se você trocar um nome de fixture por outro, o teste pode continuar verde sem provar mais nada. Mantenha a mesma forma e use nome fictício (ver CONTRIBUTING.md).
 - Teste que toca decisões deve isolar o arquivo **e** ligar a memória: `monkeypatch.setattr(rules_store, "STORE_PATH", ...)`, `DATA_DIR` e `MEMORIA` juntos, como em `tests/test_label_clusters_integration.py`. Sem ligar `MEMORIA`, a gravação é um no-op e o teste passa sem testar nada.
 

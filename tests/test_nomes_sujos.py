@@ -45,7 +45,7 @@ def test_sigla_sem_correspondencia_nao_entra():
     """Iniciais de menor que nao existem no documento continuam como estao."""
     itens = find_dirty_names([
         occ("MARIA APARECIDA RODRIGUES FONTES"),
-        occ("X Y Z"),
+        occ("D R B"),
     ])
     assert itens == []
 

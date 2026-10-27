@@ -19,6 +19,13 @@ from rapidfuzz import fuzz
 
 DEFAULT_THRESHOLD = 88
 
+# Coesao minima entre os vizinhos de um nome pra ele NAO ser tratado como
+# "farol" (ver o passo 5 de find_clusters). Metade e o ponto natural: acima
+# dela os vizinhos formam de fato um grupo e o nome curto e uma variante dele;
+# abaixo, cada vizinho e uma coisa distinta e o nome curto so os estaria
+# ligando por acidente.
+FAROL_COESAO_MINIMA = 0.5
+
 
 def strip_accents(text):
     nfkd = unicodedata.normalize("NFKD", text)
@@ -33,7 +40,7 @@ _LIXO_CORTA_DAQUI = re.compile(
     re.IGNORECASE | re.UNICODE,
 )
 # Sufixo de procurador federal ("... PRF VARA PREV", "... PRF TRF EXEC FISCAL").
-# Observado em uma planilha real: e rotulo de orgao/atribuicao grudado no nome.
+# Observado na planilha (planilha real): e rotulo de orgao/atribuicao grudado no nome.
 _LIXO_PRF = re.compile(r"\s+PRF(?:\s+[A-Z0-9]{1,6})*\s*$", re.IGNORECASE)
 _LIXO_REMOVE = [
     re.compile(r"\([^)]*\)"),                                   # (qualquer aparte)
@@ -93,7 +100,7 @@ def expandir_sigla(text, pool):
       - se o proprio texto ja esta no pool, e nome de verdade, nao sigla.
 
     Sem correspondencia, devolve o texto intacto. E o oposto do
-    `subset_initial`, que casava "X Y Z" com qualquer nome longo parecido.
+    `subset_initial`, que casava "D R B" com qualquer nome longo parecido.
     """
     if not text:
         return ""
@@ -534,6 +541,16 @@ def _ordered_subset_match(tokens_short, tokens_long, fuzzy_threshold=85):
     return True, used_initial
 
 
+def _so_iniciais(tokens):
+    """True quando o valor e so uma sequencia de iniciais - nome MASCARADO.
+
+    "Q K", "Z A P", "L P M N", ou uma letra sozinha. Nao e nome incompleto: e
+    nome deliberadamente oculto (segredo de justica, menor, vitima), do jeito
+    que a planilha de uma pratica criminal traz.
+    """
+    return bool(tokens) and all(len(t.strip(".")) <= 1 for t in tokens)
+
+
 def compare_names(norm_a, norm_b, threshold=DEFAULT_THRESHOLD, require_last_token=True):
     """Compara dois nomes ja normalizados.
     Retorna None se nao ha match, ou dict {score, reason} se ha.
@@ -557,6 +574,25 @@ def compare_names(norm_a, norm_b, threshold=DEFAULT_THRESHOLD, require_last_toke
         return None
     if norm_a == norm_b:
         return {"score": 100.0, "reason": "exact"}
+
+    # Nome MASCARADO nao se compara com nada (ver _so_iniciais).
+    #
+    # Duas sequencias de inicial parecidas nao dizem nada sobre identidade, e a
+    # regra de erro de digitacao - que existe pra pegar GUTIERREZ/GUTIERRES - tratava
+    # inicial diferente como quase igual: na conta (planilha real), "Q K B L" casava com
+    # "Q K S A" (B/S e L/A, uma letra cada) e cinco pessoas anonimizadas de
+    # processo criminal viraram uma. Juntar duas delas seria AFIRMAR que duas
+    # pessoas ocultadas sao a mesma, que e o oposto do que o dado diz.
+    #
+    # A checagem vem antes de qualquer tokenizacao de proposito, pra nao depender
+    # das outras regras (sigla na frente, juncao de token partido) e pra fechar
+    # tambem o caminho relaxado da mesma celula - que e justamente onde co-reus e
+    # co-vitimas de um mesmo processo aparecem.
+    #
+    # Isso NAO atinge inicial no meio de nome de verdade ("GILMAR O ROCHA" x
+    # "GILMAR OTAVIO ROCHA"), que continua casando: ali ha palavra inteira.
+    if _so_iniciais(norm_a.split()) or _so_iniciais(norm_b.split()):
+        return None
 
     edge_fuzzy = max(70, threshold - 3)
     # nunca deixa passar de 65, nem no controle mais baixo (70) - abaixo disso
@@ -693,7 +729,9 @@ def find_clusters(occurrences, cpf_by_norm=None, threshold=DEFAULT_THRESHOLD,
         prev = pair_info.get(key)
         if prev is None or score > prev["score"]:
             pair_info[key] = {"score": score, "reason": reason}
-        uf.union(a, b)
+        # NAO une aqui: a uniao acontece no passo 5, depois da trava do efeito
+        # farol. Unir na hora tornaria a trava impossivel, porque o estrago da
+        # transitividade ja estaria feito quando desse pra perceber o padrao.
 
     # 1) pares confirmados manualmente em execucoes anteriores
     for key in confirmed_pairs:
@@ -768,6 +806,52 @@ def find_clusters(occurrences, cpf_by_norm=None, threshold=DEFAULT_THRESHOLD,
                 if _same_cell_brand_match(tokens_a, tokens_b, content_a, content_b):
                     register_match(a, b, 80.0, "marca_comum")
 
+    # 5) trava do EFEITO FAROL, e so entao a uniao.
+    #
+    # Um nome curto pode casar por subconjunto/abreviacao com muitos nomes
+    # longos que nao casam entre si. Ele nao e "um membro a mais" do grupo: e a
+    # unica ponte que, via transitividade do union-find, funde todos num so.
+    #
+    # Visto na conta (planilha real) (21/10/2026): "MARIA DAS DORES" sozinha casava com
+    # 16 "MARIA DAS DORES <sobrenomes>" que tinham ZERO de 120 pares casando
+    # entre si - 17 mulheres diferentes viraram uma. O mesmo com "L P" (nome
+    # mascarado de processo criminal, ligando J A C, J B C, J C M N...),
+    # "MINISTERIO PUBLICO" (ligando MP Federal, MP do Trabalho e MP de MG) e
+    # "AUTORIDADE POLICIAL".
+    #
+    # A regra: se os vizinhos de um nome quase nao casam entre si, aquele nome e
+    # ambiguo - poderia ser qualquer um deles - e nao se junta a nenhum. E a
+    # mesma disciplina que `expandir_sigla` ja aplicava a sigla ("se duas
+    # pessoas do documento tem as mesmas iniciais, expandir seria chute").
+    #
+    # Par confirmado a mao e par de mesmo CPF sao autoridade e passam por cima:
+    # ali nao ha o que adivinhar.
+    autoridade = {"confirmado", "mesmo_cpf"}
+    vizinhos = defaultdict(set)
+    for key, info in pair_info.items():
+        if info["reason"] in autoridade:
+            continue
+        a, b = tuple(key)
+        vizinhos[a].add(b)
+        vizinhos[b].add(a)
+
+    arestas_de_farol = set()
+    for nome, vs in vizinhos.items():
+        if len(vs) < 2:
+            continue  # com um vizinho so nao ha ambiguidade
+        vl = sorted(vs)
+        possiveis = len(vl) * (len(vl) - 1) // 2
+        coesos = sum(1 for i, x in enumerate(vl) for y in vl[i + 1:]
+                     if frozenset((x, y)) in pair_info)
+        if coesos / possiveis < FAROL_COESAO_MINIMA:
+            arestas_de_farol.update(frozenset((nome, v)) for v in vs)
+
+    for key, info in pair_info.items():
+        if key in arestas_de_farol and info["reason"] not in autoridade:
+            continue
+        a, b = tuple(key)
+        uf.union(a, b)
+
     groups = defaultdict(list)
     for n in unique_norms:
         groups[uf.find(n)].append(n)
@@ -817,6 +901,115 @@ def find_clusters(occurrences, cpf_by_norm=None, threshold=DEFAULT_THRESHOLD,
     return clusters
 
 
+# Marcadores de cargo/funcao que aparecem COLADOS no fim do nome na planilha
+# de origem. Nao sao sobrenome: "ROBERVAL PINTO COELHO CARGO" e o mesmo
+# ROBERVAL, com um rotulo de campo que vazou pro valor.
+_CARGO_OU_FUNCAO = {
+    "CARGO", "ADV", "ADVOGADO", "ADVOGADA", "PREFEITO", "PREFEITA", "VEREADOR",
+    "VEREADORA", "PRESIDENTE", "DIRETOR", "DIRETORA", "SECRETARIO", "SECRETARIA",
+    "GOVERNADOR", "GOVERNADORA", "DELEGADO", "DELEGADA", "ESPOLIO", "HERDEIRO",
+    "HERDEIRA", "REPRESENTANTE", "RESPONSAVEL",
+}
+
+# Inicio de razao social de orgao publico. Orgao publico nao tem sufixo
+# societario nem UF colada no nome.
+_INICIO_ORGAO_PUBLICO = (
+    "UNIAO", "ESTADO", "MUNICIPIO", "PREFEITURA", "FUNDACAO", "INSTITUTO",
+    "CAIXA ECONOMICA", "DEFENSORIA", "MINISTERIO", "TRIBUNAL", "CONSELHO",
+    "AGENCIA", "SUPERINTEND", "DEPARTAMENTO", "SECRETARIA", "UNIVERSIDADE",
+    "CAMARA", "PROCURADORIA", "POLICIA", "JUIZO",
+)
+
+_SUFIXO_SOCIETARIO = {"SA", "LTDA", "EIRELI", "ME", "EPP", "MEI", "LIMITADA"}
+
+# Orgao de nivel MUNICIPAL: a cidade no nome ja localiza, entao estado colado
+# no fim e sobra. Separado de _INICIO_ORGAO_PUBLICO porque em orgao ESTADUAL o
+# estado e a propria entidade.
+_INICIO_ORGAO_MUNICIPAL = ("MUNICIPIO", "PREFEITURA", "CAMARA MUNICIPAL",
+                           "SECRETARIA MUNICIPAL")
+
+# Situacao juridica da empresa colada no nome ("BANCO CRUZEIRO DO SUL S/A
+# FALIDO"). E estado processual, nao razao social: muda com o tempo e nao
+# identifica a parte.
+_STATUS_DA_EMPRESA = {
+    "FALIDO", "FALIDA", "FALENCIA", "LIQUIDACAO", "LIQUIDANDO", "EXTINTO",
+    "EXTINTA", "RECUPERACAO", "INATIVO", "INATIVA", "BAIXADO", "BAIXADA",
+}
+
+_UFS = {"AC", "AL", "AP", "AM", "BA", "CE", "DF", "ES", "GO", "MA", "MT", "MS",
+        "MG", "PA", "PB", "PR", "PE", "PI", "RJ", "RN", "RS", "RO", "RR", "SC",
+        "SP", "SE", "TO"}
+
+# Estado escrito por extenso no fim do nome de orgao publico ("MUNICIPIO DE UBA
+# MINAS GERAIS"): mesmo caso da UF abreviada, so com mais palavras.
+_ESTADOS_POR_EXTENSO = (
+    "ACRE", "ALAGOAS", "AMAPA", "AMAZONAS", "BAHIA", "CEARA",
+    "DISTRITO FEDERAL", "ESPIRITO SANTO", "GOIAS", "MARANHAO", "MATO GROSSO",
+    "MATO GROSSO DO SUL", "MINAS GERAIS", "PARA", "PARAIBA", "PARANA",
+    "PERNAMBUCO", "PIAUI", "RIO DE JANEIRO", "RIO GRANDE DO NORTE",
+    "RIO GRANDE DO SUL", "RONDONIA", "RORAIMA", "SANTA CATARINA", "SAO PAULO",
+    "SERGIPE", "TOCANTINS",
+)
+
+
+def _ruim_como_canonico(text):
+    """True quando a variante nao serve de NOME FINAL, mesmo sendo a mais longa.
+
+    O token extra dessas formas nao completa o nome: ou e rotulo de campo que
+    vazou (cargo, funcao), ou e sufixo que o tipo de parte nao tem (orgao
+    publico com LTDA), ou ESTREITA um nome que era geral (orgao publico com
+    local ou UF). Escolher a forma estreita como nome de todo o grupo e pior
+    que escolher a geral: rotularia o processo de Sao Paulo como sendo de Juiz
+    de Fora.
+
+    Casos reais: contas (planilha real) (08/10/2026) e (planilha real) (21/10/2026).
+    """
+    norm = normalize_name(text)
+    tokens = norm.split()
+    if not tokens:
+        return True
+
+    if tokens[-1] in _CARGO_OU_FUNCAO:
+        return True
+
+    # Situacao juridica colada no fim ("BANCO CRUZEIRO DO SUL S/A FALIDO"): e
+    # estado processual da empresa, nao razao social - muda com o tempo e nao
+    # identifica a parte. Ver _STATUS_DA_EMPRESA.
+    if tokens[-1] in _STATUS_DA_EMPRESA:
+        return True
+
+    # O artigo na frente nao pode esconder o orgao: "O ESTADO DE MINAS GERAIS
+    # S/A" tem que cair na mesma regra que "ESTADO DO CEARA LTDA". Sem tirar o
+    # artigo, o startswith falha e a forma com S/A ganharia por ser mais longa
+    # - foi o que aconteceu em 45 celulas da conta (planilha real).
+    sem_artigo = " ".join(_strip_leading_article(tokens))
+    publico = any(sem_artigo.startswith(p) for p in _INICIO_ORGAO_PUBLICO)
+    if publico:
+        # Estado por extenso no fim de orgao MUNICIPAL ("MUNICIPIO DE UBA MINAS
+        # GERAIS"): a cidade ja localiza o orgao, o estado e apendice.
+        #
+        # So vale pra orgao municipal de proposito: num orgao ESTADUAL o estado
+        # E a entidade - "ESTADO DO CEARA" e o nome certo, nao um nome com
+        # sobra, e tirar dali deixaria "ESTADO DO CEARA LTDA" ganhar por ser
+        # mais longo.
+        municipal = any(sem_artigo.startswith(p) for p in _INICIO_ORGAO_MUNICIPAL)
+        if municipal and any(sem_artigo.endswith(" " + e) for e in _ESTADOS_POR_EXTENSO):
+            return True
+        if tokens[-1] in _SUFIXO_SOCIETARIO:
+            return True
+        if tokens[-1] in _UFS:
+            return True
+        # UF composta ("PR/SP") - a normalizacao tira a barra e deixa dois
+        # tokens de UF seguidos no fim.
+        if len(tokens) >= 2 and tokens[-1] in _UFS and tokens[-2] in _UFS:
+            return True
+        # qualificador de local ("... EM JUIZ DE FORA"): estreita o orgao.
+        if "EM" in tokens[1:]:
+            return True
+
+    return False
+
+
 def suggest_canonical(cluster_members, occ_by_norm, cpf_registry_name_by_cpf=None):
     """Escolhe o nome 'mais completo' entre as variantes de texto originais de um cluster.
     occ_by_norm: dict norm -> lista de occurrences (cada uma com 'text').
@@ -837,10 +1030,17 @@ def suggest_canonical(cluster_members, occ_by_norm, cpf_registry_name_by_cpf=Non
         tokens = norm.split()
         n_single = sum(1 for t in tokens if len(t) == 1)
         n_numeric = sum(1 for t in tokens if t.isdigit())
+        # Forma que RESTRINGE em vez de completar (cargo colado, orgao publico
+        # com sufixo societario, com UF ou com local) perde de qualquer forma
+        # boa - ver _ruim_como_canonico. Vem primeiro na tupla porque nem o
+        # nome mais longo deve ganhar quando o que o alonga e um rotulo.
+        # Se TODAS as variantes forem ruins, empatam aqui e o desempate segue
+        # pelos criterios de sempre, entao nunca devolve vazio.
+        ruim = 1 if _ruim_como_canonico(text) else 0
         # nomes nunca deveriam ter numeros - se tiver (ex: CPF colado por engano no
         # campo nome na planilha de origem), isso e sinal de sujeira, nao de nome
         # "mais completo": penaliza pesado pra nao virar o sugerido.
-        return (-n_numeric, len(tokens) - n_single - n_numeric, len(norm), texts_count[text])
+        return (-ruim, -n_numeric, len(tokens) - n_single - n_numeric, len(norm), texts_count[text])
 
     best_text = max(texts_count.keys(), key=completeness)
     return best_text
@@ -1382,6 +1582,13 @@ def find_dirty_names(occurrences):
     # um problema por outro.
     pool = [t for t in text_by_norm.values() if limpar_nome(t) == t]
 
+    # Em que processos (linhas) cada nome aparece - usado pra corroborar a
+    # expansao de sigla logo abaixo.
+    linhas_por_norm = defaultdict(set)
+    for occ in occurrences:
+        if occ.get("source") == "escavador" and occ.get("norm"):
+            linhas_por_norm[occ["norm"]].add(occ.get("row"))
+
     results = []
     for norm in ordem:
         texto = text_by_norm[norm]
@@ -1393,6 +1600,34 @@ def find_dirty_names(occurrences):
             # como "nome de verdade do documento" e desiste de expandir.
             expandido = expandir_sigla(texto, [t for t in pool if t != texto])
             if expandido == texto:
+                continue
+            # INICIAIS SEPARADAS exigem corroboracao: a sigla e o nome inteiro
+            # tem que estar no MESMO processo.
+            #
+            # A distincao e entre duas coisas que parecem a mesma:
+            #   - sigla CONTIGUA ("MARF", "CMMP", "BBF") - alguem abreviou um
+            #     nome ao digitar. Nao ha convencao de sigilo nisso, e a
+            #     checagem de ambiguidade de `expandir_sigla` da conta;
+            #   - iniciais SEPARADAS ("Z C P", "J D M C") - e a convencao de
+            #     MASCARAMENTO do dado judicial: vitima, menor, segredo de
+            #     justica.
+            #
+            # Pra forma separada, "inequivoco no documento" nao e evidencia.
+            # Num acervo grande quase toda sequencia de 3 iniciais acha UM nome
+            # com aquelas letras por acaso: na conta (planilha real) (3.016 processos),
+            # das 28 siglas expandidas 27 tinham o nome sugerido em processo
+            # NENHUM em comum - inclusive 'T M S' -> 'TOKIO MARINE SEGURADORA
+            # S/A' e 'A C B' -> 'APPLE COMPUTER BRASIL LTDA'.
+            #
+            # E o preco do erro e alto nas duas direcoes: a expansao errada
+            # troca o nome de uma parte, e a expansao certa revela o que o
+            # processo oculta.
+            #
+            # Mesmo processo e a situacao pra qual a regra foi feita: o
+            # Escavador abreviou numa coluna um nome que esta inteiro na outra.
+            if _so_iniciais(norm.split()) and not (
+                    linhas_por_norm.get(norm, set())
+                    & linhas_por_norm.get(normalize_name(expandido), set())):
                 continue
             motivo, sugerido = "sigla", expandido
         c_rows = sorted(set(cliente_rows.get(norm, [])))
@@ -1419,7 +1654,7 @@ def _suggest_label_canonical(variants):
     do agrupamento por igualdade - ver find_label_clusters) - entao "mais
     tokens" as vezes escolhe o pior, nao o melhor: "MULTA DE" tem mais tokens
     que "MULTA", mas o "DE" solto no final e sinal de dado truncado, nao de
-    rotulo mais completo (visto em dado real, em uma planilha real, 10/09/2026).
+    rotulo mais completo (visto em dado real, planilha (planilha real), 10/09/2026).
     Por isso a primeira regra e nunca escolher um rotulo que termina em
     conector; dentro dos que nao terminam, o mais frequente na planilha."""
     def termina_em_conector(v):
@@ -1442,7 +1677,7 @@ def find_label_clusters(occurrences, blacklist_pairs=None, confirmed_pairs=None)
     A regra NAO e contencao/similaridade fuzzy (como match_category_against_
     registry usa) - e IGUALDADE do conjunto de palavras de conteudo depois de
     tirar so conectores gramaticais (LABEL_FILLER_WORDS). Motivo: dados reais
-    de escritorio (uma planilha real, 10/09/2026) mostraram que contencao e
+    de escritorio (planilha (planilha real), 10/09/2026) mostraram que contencao e
     perigosa demais aqui. Rotulo do ADVBOX costuma vir como trilha composta
     ("CASAMENTO / DISSOLUCAO / EMENDA A INICIAL FLS / NAO ATUA FLS"), e uma
     palavra curta generica bate por acaso dentro de varias trilhas sem

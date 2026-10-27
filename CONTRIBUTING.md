@@ -49,7 +49,7 @@ cd frontend && npm install && npm run build && cd ..
 python -m pytest tests
 ```
 
-São 127 testes. Precisam passar antes e depois da sua mudança.
+São 176 testes. Precisam passar antes e depois da sua mudança.
 
 Mexeu em `frontend/src`? Rode `npm run build` de novo — o Flask serve o bundle
 de `static/dist/`, não os fontes. Mexeu num `.py` ou num template? Reinicie o
