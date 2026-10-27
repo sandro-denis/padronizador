@@ -483,14 +483,27 @@ def api_analyze():
 
     blacklist_pairs, confirmed_pairs = rules_store.load_sets()
 
-    clusters = find_clusters(
-        all_occ,
-        cpf_by_norm=cpf_by_norm,
-        threshold=threshold,
-        blacklist_pairs=blacklist_pairs,
-        confirmed_pairs=confirmed_pairs,
-    )
-    session["clusters"] = clusters
+    # O agrupamento e a parte cara da analise - numa conta real sao 564 mil
+    # pares comparados, quase um minuto e meio numa hospedagem modesta. E ele
+    # depende SO dos nomes, do limiar e das regras guardadas: nao muda quando
+    # a pessoa cola a lista oficial de responsaveis ou de tipos de acao.
+    #
+    # Sem este cache, cada clique em "Comparar" - que existe em quatro secoes
+    # e e justamente o que se usa depois de colar a lista - repetia o calculo
+    # inteiro. A pessoa pagava de novo, do zero, por uma resposta identica.
+    chave_cache = (threshold, len(blacklist_pairs), len(confirmed_pairs))
+    if session.get("clusters_cache_chave") == chave_cache:
+        clusters = session["clusters"]
+    else:
+        clusters = find_clusters(
+            all_occ,
+            cpf_by_norm=cpf_by_norm,
+            threshold=threshold,
+            blacklist_pairs=blacklist_pairs,
+            confirmed_pairs=confirmed_pairs,
+        )
+        session["clusters"] = clusters
+        session["clusters_cache_chave"] = chave_cache
 
     cpf_registry_name_by_cpf = {}
     if session["cli_meta"]:
@@ -1100,6 +1113,10 @@ def api_apply():
         if action == "remover" and row:
             rows_to_delete.add(row)
             clientes_duplicates_removed.append({"text": d.get("text") or f"linha {row}"})
+
+    # aplicar pode gravar decisoes novas no rules_store, e elas mudam o
+    # agrupamento - entao o cache de clusters nao vale mais
+    session.pop("clusters_cache_chave", None)
 
     out_dir = os.path.join(_session_dir(session_id), "outputs")
     os.makedirs(out_dir, exist_ok=True)
