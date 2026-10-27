@@ -118,7 +118,9 @@ README não resolve.
 | Sessão **apagada** do disco | `PADRONIZADOR_SESSAO_TTL_MIN=60`. A varredura roda a cada upload e remove o que passou do prazo, inclusive o que sobrou de um reinício |
 | Nenhuma tela de histórico | Não existe rota que liste sessões. Ninguém enumera o que outro rodou |
 | OCR ausente em vez de quebrado | O OCR usa a API do Windows; em Linux `/api/config` informa e a interface esconde a seção |
-| Um worker só | O estado da revisão vive em memória do processo |
+| Um worker só | O estado da revisão vive na memória do processo — mas é **cache**: qualquer worker remonta a sessão a partir dos arquivos no disco |
+| A revisão **não se perde** | O navegador guarda as decisões e os arquivos enviados; se a sessão morrer no servidor, a página reenvia e religa tudo sozinha |
+| Sessão em uso **não é varrida** | A aba manda sinal de vida (`/api/ping`). Sem isso, o upload de uma pessoa apagava a revisão longa de outra |
 
 ### O que NÃO está resolvido
 
@@ -127,10 +129,37 @@ README não resolve.
   navegador — quem alcançar o log alcança o download enquanto a sessão existir.
   Para uso com dado real por mais de um escritório, **coloque autenticação na
   frente** (proxy com senha, OAuth, VPN).
-- **Um worker só não escala.** Mais de um exige tirar a sessão da memória do
-  processo (Redis ou banco). Não é ajuste de configuração.
-- **Reiniciar derruba a revisão em andamento.** Em plano gratuito que dorme por
-  inatividade, isso acontece com frequência.
+- **Mais de um worker ainda não foi exercitado.** A sessão já é remontável do
+  disco (`_rehidratar_sessao`), que era o impedimento de fundo, mas o
+  `Dockerfile` segue com um worker só até isso ser testado de verdade.
+- **Reiniciar interrompe, mas não perde.** A revisão volta sozinha. O que se
+  perde é o tempo do reenvio e de refazer a análise, não o trabalho.
+
+### Como a revisão sobrevive ao servidor
+
+A revisão inteira acontece no navegador: entre "analisar" e "aplicar" **nenhuma
+requisição é feita**. Para o servidor, alguém lendo 300 nomes com cuidado é
+alguém ausente — e foi assim que uma revisão real de 158 itens se perdeu, numa
+instância gratuita que dormiu por inatividade.
+
+Três camadas resolvem isso, nessa ordem de defesa:
+
+1. **Sinal de vida** (`POST /api/ping/<id>`, a cada 3 minutos enquanto a aba
+   está aberta). Mantém a instância acordada e marca a sessão como em uso, para
+   que a varredura por tempo não apague o trabalho de quem ainda está nele —
+   nem mesmo quando disparada pelo upload de outra pessoa.
+2. **Remontagem do disco.** O que a sessão guarda na memória é cache: dados já
+   lidos e caminhos. Se o processo reinicia e os arquivos continuam no disco, a
+   sessão é reconstruída sozinha na requisição seguinte.
+3. **Autossalvamento no navegador.** As decisões vão para o `localStorage` a
+   cada 15 segundos e os arquivos enviados, para o IndexedDB. Se a sessão morreu
+   de vez (disco efêmero que reiniciou limpo), a página reenvia os arquivos,
+   refaz a análise e religa cada decisão **pelo nome** — nunca pelo id, que só
+   vale dentro de uma análise. Nada disso sai da máquina de quem está revisando.
+
+A terceira camada depende de o agrupamento ser determinístico: o mesmo arquivo
+com o mesmo limiar produz exatamente os mesmos grupos. É o que permite casar as
+decisões salvas com a análise nova sem ambiguidade.
 
 ### Subindo no Render
 

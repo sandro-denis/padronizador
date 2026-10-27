@@ -35,6 +35,37 @@ function initState() {
 }
 watch(() => props.clusters, initState, { immediate: true });
 
+// `id` so vale dentro de UMA analise. O que atravessa uma sessao nova e o
+// conjunto de nomes do grupo - o agrupamento e deterministico pro mesmo
+// arquivo e o mesmo limiar, entao o mesmo grupo reaparece igual.
+function chaveDeGrupo(nomes) {
+  return [...nomes].sort().join("|");
+}
+
+function restaurar(salvas) {
+  if (!salvas || !salvas.length) return 0;
+  const porChave = new Map(salvas.map((d) => [
+    chaveDeGrupo([...(d.members || []), ...(d.excluded_members || [])]), d,
+  ]));
+  let n = 0;
+  for (const c of props.clusters) {
+    const d = porChave.get(chaveDeGrupo(c.members));
+    const s = state[c.id];
+    if (!d || !s) continue;
+    // o canonico salvo pode ser um texto que a pessoa digitou na mao - nesse
+    // caso ele nao esta entre as variantes e tem que voltar como "outro"
+    const ehVariante = c.variants.some((v) => v.text === d.canonical);
+    s.action = d.action;
+    s.useCustom = !ehVariante;
+    if (ehVariante) s.canonical = d.canonical;
+    else s.customCanonical = d.canonical;
+    s.excluded = new Set(d.excluded_members || []);
+    s.touched = !!d.touched;
+    n++;
+  }
+  return n;
+}
+
 function markTouched(id) {
   state[id].touched = true;
 }
@@ -146,7 +177,7 @@ function collectDecisions() {
 
 const touchedCount = computed(() => Object.values(state).filter((s) => s.touched).length);
 
-defineExpose({ collectDecisions, touchedCount });
+defineExpose({ restaurar, collectDecisions, touchedCount });
 
 // Atalhos: so agem enquanto o mouse esta sobre a secao (evita disparar
 // enquanto o usuario digita em outro card na tela) e nunca com foco em

@@ -138,6 +138,47 @@ function initState() {
 }
 watch(() => props.suggestions, initState, { immediate: true });
 
+// `id` so vale dentro de UMA analise. O que atravessa uma sessao nova e o
+// conjunto de nomes do grupo - o agrupamento e deterministico pro mesmo
+// arquivo e o mesmo limiar, entao o mesmo grupo reaparece igual.
+function chaveDeGrupo(nomes) {
+  return [...nomes].sort().join("|");
+}
+
+function restaurar(salvasSugestoes, salvasClusters) {
+  let n = 0;
+  if (salvasSugestoes && salvasSugestoes.length) {
+    const porNorm = new Map(salvasSugestoes.map((d) => [d.norm, d]));
+    for (const s of props.suggestions) {
+      const d = porNorm.get(s.norm);
+      if (!d || !state[s.norm]) continue;
+      state[s.norm].action = d.action === "aplicar" ? "aplicar" : "manter";
+      if (d.canonical) state[s.norm].selected = d.canonical;
+      state[s.norm].touched = !!d.touched;
+      n++;
+    }
+  }
+  if (salvasClusters && salvasClusters.length) {
+    const porChave = new Map(salvasClusters.map((d) => [
+      chaveDeGrupo([...(d.members || []), ...(d.excluded_members || [])]), d,
+    ]));
+    for (const c of props.clusters) {
+      const d = porChave.get(chaveDeGrupo(c.members));
+      const s = clusterState[c.id];
+      if (!d || !s) continue;
+      const ehVariante = c.variants.some((v) => v.text === d.canonical);
+      s.action = d.action;
+      s.useCustom = !ehVariante;
+      if (ehVariante) s.canonical = d.canonical;
+      else s.customCanonical = d.canonical;
+      s.excluded = new Set(d.excluded_members || []);
+      s.touched = !!d.touched;
+      n++;
+    }
+  }
+  return n;
+}
+
 function formatRowList(rows, maxShow = 6) {
   if (!rows || !rows.length) return "";
   if (rows.length <= maxShow) return rows.join(", ");
@@ -209,7 +250,7 @@ const touchedCount = computed(() =>
   Object.values(state).filter((s) => s.touched).length + clusterTouchedCount.value
 );
 
-defineExpose({ collectDecisions, collectClusterDecisions, touchedCount });
+defineExpose({ restaurar, collectDecisions, collectClusterDecisions, touchedCount });
 
 // Mesmo padrao de ClustersSection.vue: atalho so age com o mouse sobre a
 // lista e nunca com foco em campo de texto.

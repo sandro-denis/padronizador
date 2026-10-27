@@ -55,6 +55,26 @@ async function onExtractOcr() {
   }
 }
 
+function restaurar(salvas) {
+  if (!salvas || !salvas.length) return 0;
+  const porNorm = new Map(salvas.map((d) => [d.norm, d]));
+  let n = 0;
+  for (const s of props.suggestions) {
+    const d = porNorm.get(s.norm);
+    if (!d || !state[s.norm]) continue;
+    const escolhido = d.action === "apply" ? (d.canonical || "") : "";
+    // se o texto salvo nao e uma das opcoes oficiais, ele foi digitado a mao
+    if (escolhido && !registry.value.includes(escolhido)) {
+      state[s.norm].selected = "__custom__";
+      state[s.norm].custom = escolhido;
+    } else {
+      state[s.norm].selected = escolhido;
+    }
+    n++;
+  }
+  return n;
+}
+
 function collectDecisions() {
   return props.suggestions.map((s) => {
     const st = state[s.norm];
@@ -67,7 +87,7 @@ function collectDecisions() {
   });
 }
 
-defineExpose({ collectDecisions });
+defineExpose({ restaurar, collectDecisions });
 </script>
 
 <template>

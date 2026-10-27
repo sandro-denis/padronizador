@@ -1,7 +1,8 @@
 <script setup>
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, onMounted, nextTick } from "vue";
 import * as api from "./api";
 import { inicializarConfig } from "./config";
+import { guardarArquivos, recuperarArquivos, salvarDecisoes, carregarDecisoes } from "./sessao";
 import Sidebar from "./components/Sidebar.vue";
 import UploadSection from "./components/UploadSection.vue";
 import SensibilidadeSection from "./components/SensibilidadeSection.vue";
@@ -14,7 +15,73 @@ import AdvboxSection from "./components/AdvboxSection.vue";
 import AcaoValidationSection from "./components/AcaoValidationSection.vue";
 import ApplySection from "./components/ApplySection.vue";
 
-onMounted(inicializarConfig);
+const recuperando = ref(false);
+
+onMounted(() => {
+  inicializarConfig();
+  api.configurarRecuperacao(recuperarSessao);
+
+  // Autossalvamento: em vez de observar o estado de cada secao uma a uma,
+  // tira uma foto do que seria ENVIADO. E o mesmo objeto do "Aplicar", entao
+  // nao tem como o que foi salvo divergir do que a pessoa esta vendo.
+  setInterval(() => {
+    if (analyzed.value && sessionId.value) salvarDecisoes(collectAllDecisions());
+  }, 15000);
+
+  // Sinal de vida. A revisao nao gera requisicao nenhuma - a pessoa pode
+  // passar uma hora lendo sem o servidor saber que ela existe. Sem isso a
+  // instancia dorme (plano gratuito) e a varredura por tempo apaga a sessao
+  // de quem esta trabalhando, inclusive por causa do upload de outra pessoa.
+  setInterval(async () => {
+    if (!sessionId.value || recuperando.value) return;
+    try {
+      const r = await api.ping(sessionId.value);
+      if (!r.viva) await recuperarSessao();
+    } catch {
+      // sem rede agora: a proxima batida tenta de novo
+    }
+  }, 3 * 60 * 1000);
+});
+
+function restaurarTudo(salvo) {
+  if (!salvo) return;
+  clustersRef.value?.restaurar(salvo.decisions);
+  clientesDuplicatasRef.value?.restaurar(salvo.clientes_duplicate_decisions);
+  responsaveisRef.value?.restaurar(salvo.responsavel_decisions);
+  tipoAcaoRef.value?.restaurar(salvo.tipo_acao_decisions, salvo.tipo_acao_cluster_decisions);
+  grupoAcaoRef.value?.restaurar(salvo.grupo_acao_decisions, salvo.grupo_acao_cluster_decisions);
+  nomeValidacaoRef.value?.restaurar(salvo.nome_validacao_decisions, []);
+  clienteParteRef.value?.restaurar(salvo.cliente_parte_overlap_decisions);
+  courtJudgeRef.value?.restaurar(salvo.court_judge_decisions);
+  financeiroRef.value?.restaurar(salvo.financeiro_orphan_decisions);
+  advboxRef.value?.restaurar(salvo.advbox_only_decisions, salvo.advbox_conflict_decisions);
+}
+
+// Reergue a sessao sozinho quando o servidor perdeu ela. Reenvia os arquivos
+// guardados no navegador, refaz a analise - que da o mesmo resultado pro
+// mesmo arquivo e o mesmo limiar - e religa as decisoes pelo NOME, nunca pelo
+// id (id so vale dentro de uma analise). Chamada pelo api.js em qualquer rota
+// que receba "sessao nao encontrada", e tambem pelo sinal de vida.
+async function recuperarSessao() {
+  if (recuperando.value) return null;
+  const arquivos = await recuperarArquivos();
+  if (!arquivos) return null;
+  const salvo = carregarDecisoes();
+  recuperando.value = true;
+  try {
+    const up = await api.uploadArquivos(arquivos);
+    sessionId.value = up.session_id;
+    await runAnalyze();
+    await nextTick();
+    restaurarTudo(salvo);
+    return up.session_id;
+  } catch {
+    return null;
+  } finally {
+    recuperando.value = false;
+  }
+}
+
 
 const sessionId = ref(null);
 const threshold = ref(88);
@@ -69,6 +136,9 @@ const nomeValidacaoRef = ref(null);
 async function handleUpload(formData) {
   uploadStatus.value = null;
   try {
+    // os arquivos vao pro navegador ANTES de subir: se a sessao do
+    // servidor morrer depois, da pra reenviar sem pedir nada pra pessoa
+    await guardarArquivos(formData);
     const data = await api.uploadArquivos(formData);
     sessionId.value = data.session_id;
     escFilename.value = data.escavador?.filename || null;
@@ -243,6 +313,12 @@ const progressPct = computed(() => {
           <div class="progress-fill" :style="{ width: progressPct + '%' }"></div>
         </div>
       </div>
+      <div class="session-chip" v-if="recuperando" role="status">
+        <span class="dot" aria-hidden="true"></span>
+        <span>A sessão caiu no servidor — reenviando os arquivos e
+          recuperando a sua revisão, sem perder nada.</span>
+      </div>
+
     </header>
 
     <div class="layout">

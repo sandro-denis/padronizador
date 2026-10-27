@@ -47,6 +47,25 @@ function sourceLabel(source) {
   return source === "advbox_pessoas" ? "cadastro de pessoas" : "parte de processo";
 }
 
+function restaurar(salvasOnly, salvasConflitos) {
+  let n = 0;
+  const porNorm = new Map((salvasOnly || []).map((d) => [d.norm, d]));
+  for (const item of props.onlyItems) {
+    const d = porNorm.get(item.norm);
+    if (!d || !onlyState[item.id]) continue;
+    onlyState[item.id].action = d.action;
+    n++;
+  }
+  const porKey = new Map((salvasConflitos || []).map((d) => [d.key, d]));
+  for (const item of props.conflicts) {
+    const d = porKey.get(item.key);
+    if (!d || !conflictState[item.id]) continue;
+    conflictState[item.id].action = d.action;
+    n++;
+  }
+  return n;
+}
+
 function collectOnlyDecisions() {
   return props.onlyItems.map((item) => ({
     norm: item.norm,
@@ -67,7 +86,7 @@ const touchedCount = computed(() => (
   Object.values(conflictState).filter((s) => s.touched).length
 ));
 
-defineExpose({ collectOnlyDecisions, collectConflictDecisions, touchedCount });
+defineExpose({ restaurar, collectOnlyDecisions, collectConflictDecisions, touchedCount });
 </script>
 
 <template>

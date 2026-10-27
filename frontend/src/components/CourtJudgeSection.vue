@@ -35,6 +35,20 @@ function reasonLabel(reason) {
   return "tribunal/vara/comarca";
 }
 
+function restaurar(salvas) {
+  if (!salvas || !salvas.length) return 0;
+  const porNorm = new Map(salvas.map((d) => [d.norm, d]));
+  let n = 0;
+  for (const item of props.items) {
+    const d = porNorm.get(item.norm);
+    if (!d || !state[item.id]) continue;
+    state[item.id].action = d.action;
+    state[item.id].touched = !!d.touched;
+    n++;
+  }
+  return n;
+}
+
 function collectDecisions() {
   return props.items.map((item) => ({
     norm: item.norm,
@@ -46,7 +60,7 @@ function collectDecisions() {
 
 const touchedCount = computed(() => Object.values(state).filter((s) => s.touched).length);
 
-defineExpose({ collectDecisions, touchedCount });
+defineExpose({ restaurar, collectDecisions, touchedCount });
 </script>
 
 <template>

@@ -35,6 +35,19 @@ function initState() {
 }
 watch(() => [props.exactGroups, props.fuzzyGroups], initState, { immediate: true });
 
+function restaurar(salvas) {
+  if (!salvas || !salvas.length) return 0;
+  // aqui a chave estavel e o NUMERO DA LINHA: o mesmo arquivo reenviado tem
+  // as mesmas linhas, e e por linha que a remocao e aplicada
+  let n = 0;
+  for (const d of salvas) {
+    if (!rowDecisions[d.row]) continue;
+    rowDecisions[d.row].remove = d.action === "remover";
+    n++;
+  }
+  return n;
+}
+
 function statusLabel(status) {
   if (status === "mesmo_cpf") return "mesmo CPF — confirma ser a mesma pessoa";
   if (status === "cpf_diferente") return "CPF DIFERENTE — provavelmente não é a mesma pessoa";
@@ -54,7 +67,7 @@ function collectDecisions() {
   }));
 }
 
-defineExpose({ collectDecisions });
+defineExpose({ restaurar, collectDecisions });
 </script>
 
 <template>

@@ -11,6 +11,7 @@ Fluxo:
   4. Aplicar (POST /api/apply) - gera os arquivos corrigidos + aba de log.
   5. Download (GET /api/download/<session_id>/<kind>)
 """
+import json
 import os
 import shutil
 import time
@@ -106,6 +107,122 @@ def _session_dir(session_id):
     return d
 
 
+# Papel de cada arquivo enviado, gravado ao lado deles. O SESSIONS vive na
+# memoria do processo; os arquivos, no disco. Sem esse mapa nao da pra saber,
+# depois de um reinicio, qual .xlsx era o do Escavador e qual era o de
+# Clientes - os dois sao so um nome de arquivo qualquer dentro de uploads/.
+_META_ARQUIVO = "meta.json"
+
+
+def _salvar_meta(session_id, papeis):
+    caminho = os.path.join(_session_dir(session_id), _META_ARQUIVO)
+    with open(caminho, "w", encoding="utf-8") as f:
+        json.dump(papeis, f, ensure_ascii=False)
+
+
+def _tocar_sessao(session_id):
+    """Marca a sessao como viva, pra varredura por TTL nao apagar ela.
+
+    A varredura olha o mtime do diretorio, e durante a REVISAO nada e escrito
+    ali: a revisao inteira acontece no navegador, sem falar com o servidor.
+    Sem isso, uma revisao longa era apagada pelo upload de OUTRA pessoa - quem
+    estava no meio do trabalho perdia tudo por causa de um estranho.
+
+    Nao usa _session_dir de proposito: aquele CRIA o diretorio, e recriar um
+    diretorio ja varrido seria ressuscitar uma sessao vazia.
+    """
+    try:
+        os.utime(os.path.join(SESSIONS_DIR, session_id), None)
+    except OSError:
+        pass  # ja foi apagada, ou o SO nao deixou: nao e motivo pra falhar
+
+
+def _rehidratar_sessao(session_id):
+    """Remonta a sessao a partir dos arquivos que estao no disco.
+
+    Tudo que o SESSIONS guarda e cache - dados ja lidos e caminhos. O que NAO
+    da pra reconstruir sao os arquivos enviados, e esses estao no disco. Entao
+    reiniciar o processo (deploy, worker novo, queda) nao precisa mais custar
+    a revisao de quem estava no meio dela. E e tambem o que permitiria rodar
+    com mais de um worker: qualquer um remonta a sessao aberta no outro.
+
+    Devolve None quando nao ha o que remontar - diretorio ja varrido pelo TTL,
+    ou hospedagem de disco efemero que reiniciou limpa. Nesse caso quem
+    recupera e o navegador (ver o autossalvamento no front-end).
+    """
+    sdir = os.path.join(SESSIONS_DIR, session_id)
+    caminho_meta = os.path.join(sdir, _META_ARQUIVO)
+    if not os.path.isfile(caminho_meta):
+        return None
+    try:
+        with open(caminho_meta, encoding="utf-8") as f:
+            papeis = json.load(f)
+    except (OSError, ValueError):
+        return None
+
+    uploads = os.path.join(sdir, "uploads")
+
+    def caminho(papel):
+        nome = papeis.get(papel)
+        if not nome:
+            return None
+        p = os.path.join(uploads, nome)
+        return p if os.path.isfile(p) else None
+
+    esc_path = caminho("esc")
+    cli_path = caminho("cli")
+    fin_path = caminho("fin")
+    ap_path = caminho("advbox_pessoas")
+    apr_path = caminho("advbox_processos")
+    if not esc_path and not cli_path:
+        return None  # sem nenhuma das duas planilhas principais nao ha sessao
+
+    try:
+        sessao = {
+            "esc_path": esc_path,
+            "esc_filename": papeis.get("esc"),
+            "esc_meta": excel_io.read_escavador_occurrences(esc_path) if esc_path else None,
+            "cli_path": cli_path,
+            "cli_filename": papeis.get("cli"),
+            "cli_meta": excel_io.read_clientes_rows(cli_path) if cli_path else None,
+            "fin_path": fin_path,
+            "fin_filename": papeis.get("fin"),
+            "fin_meta": excel_io.read_financeiro_rows(fin_path) if fin_path else None,
+            "advbox_pessoas": advbox_io.read_pessoas_pdf(ap_path) if ap_path else None,
+            "advbox_processos": advbox_io.read_processos_pdf(apr_path) if apr_path else None,
+        }
+    except Exception:
+        # arquivo truncado por uma queda no meio do upload, por exemplo: melhor
+        # pedir reenvio do que seguir com dado pela metade
+        return None
+    SESSIONS[session_id] = sessao
+    return sessao
+
+
+def _obter_sessao(session_id):
+    """A sessao - do cache, ou remontada do disco - ja marcada como viva."""
+    sessao = SESSIONS.get(session_id)
+    if sessao is None:
+        sessao = _rehidratar_sessao(session_id)
+    if sessao is not None:
+        _tocar_sessao(session_id)
+    return sessao
+
+
+@app.route("/api/ping/<session_id>", methods=["POST"])
+def api_ping(session_id):
+    """Sinal de vida da aba que esta revisando agora.
+
+    Resolve duas coisas de uma vez:
+      1. impede que a varredura por TTL apague uma sessao EM USO - durante a
+         revisao o servidor nao recebe nenhuma outra requisicao daquela aba;
+      2. em hospedagem que dorme por inatividade (plano gratuito), mantem a
+         instancia acordada enquanto alguem trabalha - que e exatamente
+         quando dormir custa o trabalho da pessoa.
+    """
+    return jsonify({"viva": _obter_sessao(session_id) is not None})
+
+
 @app.route("/")
 def index():
     return render_template("app.html")
@@ -198,6 +315,16 @@ def api_upload():
             advbox_processos_data = advbox_io.read_processos_pdf(advbox_processos_path)
         except Exception as exc:
             return jsonify({"error": f"Erro lendo o PDF de processos do ADVBOX: {exc}"}), 400
+
+    # o mapa de papeis vai pro disco junto: e o que permite remontar a
+    # sessao depois de um reinicio, quando o SESSIONS em memoria ja se foi
+    _salvar_meta(session_id, {
+        "esc": escavador_file.filename if tem_escavador_file else None,
+        "cli": clientes_file.filename if cli_path else None,
+        "fin": financeiro_file.filename if fin_path else None,
+        "advbox_pessoas": advbox_pessoas_file.filename if advbox_pessoas_data is not None else None,
+        "advbox_processos": advbox_processos_file.filename if advbox_processos_data is not None else None,
+    })
 
     SESSIONS[session_id] = {
         "esc_path": esc_path,
@@ -340,7 +467,7 @@ def api_analyze():
     tipos_acao_text = body.get("tipos_acao_text", "") or ""
     grupos_acao_text = body.get("grupos_acao_text", "") or ""
     nomes_text = body.get("nomes_text", "") or ""
-    session = SESSIONS.get(session_id)
+    session = _obter_sessao(session_id)
     if not session:
         return jsonify({"error": "Sessao nao encontrada. Envie os arquivos de novo."}), 404
 
@@ -665,7 +792,7 @@ def api_apply():
     # verdade (dry_run=False) e que o "lembrar pra proxima vez" vale.
     persist_rules = bool(body.get("persist_rules", True)) and not dry_run
 
-    session = SESSIONS.get(session_id)
+    session = _obter_sessao(session_id)
     if not session:
         return jsonify({"error": "Sessao nao encontrada. Envie os arquivos de novo."}), 404
 
@@ -1052,7 +1179,7 @@ def api_apply():
 
 @app.route("/api/download/<session_id>/<kind>")
 def api_download(session_id, kind):
-    session = SESSIONS.get(session_id)
+    session = _obter_sessao(session_id)
     if not session or "out_dir" not in session:
         abort(404)
     if kind == "escavador" and session.get("esc_meta"):
