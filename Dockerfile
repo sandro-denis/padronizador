@@ -48,14 +48,20 @@ ENV PADRONIZADOR_MEMORIA=0 \
 
 EXPOSE 5057
 
-# UM worker, nao mais.
+# UM worker por padrao - mas agora da pra mudar.
 #
-# O estado da revisao vive no dicionario SESSIONS, em memoria do processo. Com
-# dois workers, a requisicao seguinte cai no outro processo, que nao conhece a
-# sessao, e a tela leva 404 de forma intermitente. Trocar isso por varios
-# workers exige mover a sessao pra fora do processo (Redis ou banco) - nao e
-# ajuste de configuracao.
+# O estado da revisao vive no dicionario SESSIONS, em memoria do processo.
+# Antes isso travava o numero de workers em um: a requisicao seguinte caia no
+# outro processo, que nao conhecia a sessao, e a tela levava 404 intermitente.
+#
+# Com _rehidratar_sessao (ver app.py) isso deixou de ser verdade: qualquer
+# worker remonta do disco a sessao aberta em outro. Entao WEB_CONCURRENCY=2
+# funciona - mas so compensa com VARIAS PESSOAS ao mesmo tempo, porque:
+#   - o worker que nao tem a sessao paga a releitura da planilha;
+#   - o cache do agrupamento e por processo, entao um "Comparar" que caia no
+#     worker frio refaz a analise inteira.
+# Para UMA pessoa de cada vez, um worker so continua sendo mais rapido.
 #
 # O timeout folgado e porque uma planilha de milhares de processos leva dezenas
 # de segundos pra analisar, e o padrao de 30s do gunicorn mataria o worker.
-CMD gunicorn --workers 1 --threads 4 --timeout 300 --bind 0.0.0.0:$PORT app:app
+CMD gunicorn --workers ${WEB_CONCURRENCY:-1} --threads 4 --timeout 300 --bind 0.0.0.0:$PORT app:app
