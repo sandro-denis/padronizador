@@ -217,6 +217,11 @@ async function runAnalyze() {
 function collectAllDecisions() {
   return {
     session_id: sessionId.value,
+    // Vai junto so pra deixar rastro: o servidor ignora. Sem isso, um
+    // resgate de revisao perdida nao sabe com que sensibilidade os grupos
+    // foram formados - e grupo de limiar 92 nao casa com analise feita em
+    // 88. Custou uma caca ao limiar numa recuperacao real (24/11/2026).
+    threshold: threshold.value,
     decisions: clustersRef.value?.collectDecisions() || [],
     clientes_duplicate_decisions: clientesDuplicatasRef.value?.collectDecisions() || [],
     responsavel_decisions: responsaveisRef.value?.collectDecisions() || [],
